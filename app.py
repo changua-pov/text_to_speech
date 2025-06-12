@@ -208,8 +208,8 @@ def quick_speech():
         # Use default voice settings for quick speech
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
-            language_code='en-US',
-            name='en-US-Wavenet-D'
+            language_code='es-US',
+            name='es-US-Chirp3-HD-Achernar'
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3

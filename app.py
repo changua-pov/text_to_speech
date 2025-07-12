@@ -73,8 +73,8 @@ def synthesize_speech():
             return jsonify({"error": "Text cannot be empty"}), 400
         
         # Configuration parameters with defaults
-        language_code = data.get('language_code', 'en-US')
-        voice_name = data.get('voice_name', 'en-US-Wavenet-D')
+        language_code = data.get('language_code', 'es-US')
+        voice_name = data.get('voice_name', 'es-US-Chirp-HD-O')
         speaking_rate = max(0.25, min(4.0, data.get('speaking_rate', 1.0)))
         pitch = max(-20.0, min(20.0, data.get('pitch', 0.0)))
         volume_gain_db = max(-96.0, min(16.0, data.get('volume_gain_db', 0.0)))
@@ -208,8 +208,8 @@ def quick_speech():
         # Use default voice settings for quick speech
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
-            language_code='en-US',
-            name='en-US-Wavenet-D'
+            language_code='es-US',
+            name='es-US-Chirp-HD-O'
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3

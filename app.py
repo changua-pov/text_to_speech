@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timedelta
 import threading
 import time
+import re
+import unicodedata
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
@@ -18,6 +20,135 @@ client = texttospeech.TextToSpeechClient()
 
 # Store for temporary audio files (cleanup after 1 hour)
 audio_store = {}
+
+def clean_text_for_tts(text):
+    """
+    Clean text for TTS by removing or replacing problematic characters
+    
+    Args:
+        text (str): Raw text input
+        
+    Returns:
+        str: Cleaned text suitable for TTS
+    """
+    if not text:
+        return ""
+    
+    # Remove emojis and other pictographs
+    # This covers most emoji ranges in Unicode
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002702-\U000027B0"  # dingbats
+        "\U000024C2-\U0001F251"  # enclosed characters
+        "\U0001F900-\U0001F9FF"  # supplemental symbols
+        "\U0001FA70-\U0001FAFF"  # symbols and pictographs extended-A
+        "]+", flags=re.UNICODE
+    )
+    text = emoji_pattern.sub('', text)
+    
+    # Remove or replace special characters that might cause TTS issues
+    replacements = {
+        # Common symbols that should be spoken
+        '&': ' and ',
+        '@': ' at ',
+        '#': ' hashtag ',
+        '$': ' dollar ',
+        '%': ' percent ',
+        '+': ' plus ',
+        '=': ' equals ',
+        '<': ' less than ',
+        '>': ' greater than ',
+        '|': ' ',
+        '\\': ' ',
+        '/': ' slash ',
+        '*': '',
+        '^': '',
+        '~': '',
+        '`': '',
+        '_': ' ',
+        '{': '',
+        '}': '',
+        '[': '',
+        ']': '',
+        
+        # Multiple punctuation cleanup
+        '...': '.',
+        '!!': '!',
+        '??': '?',
+        ';;': ';',
+        '::': ':',
+        
+        # Common internet slang replacements
+        'lol': 'laugh out loud',
+        'LOL': 'laugh out loud',
+        'omg': 'oh my god',
+        'OMG': 'oh my god',
+        'btw': 'by the way',
+        'BTW': 'by the way',
+        'fyi': 'for your information',
+        'FYI': 'for your information',
+    }
+    
+    # Apply replacements
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Remove URLs (basic pattern)
+    url_pattern = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
+    text = url_pattern.sub(' ', text)
+    
+    # Remove email addresses
+    email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+    text = email_pattern.sub(' ', text)
+    
+    # Remove phone numbers (basic pattern)
+    phone_pattern = re.compile(r'(\+?1[-.\s]?)?(\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4})')
+    text = phone_pattern.sub(' phone number ', text)
+    
+    # Remove excessive whitespace and normalize
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    
+    # Remove control characters
+    text = ''.join(char for char in text if unicodedata.category(char)[0] != 'C')
+    
+    # Ensure text ends with proper punctuation for natural speech
+    if text and text[-1] not in '.!?':
+        text += '.'
+    
+    return text
+
+def validate_and_clean_text(text, max_length=5000):
+    """
+    Validate and clean text for TTS processing
+    
+    Args:
+        text (str): Input text
+        max_length (int): Maximum allowed text length
+        
+    Returns:
+        tuple: (cleaned_text, error_message)
+    """
+    if not text:
+        return None, "Text is required"
+    
+    if not isinstance(text, str):
+        return None, "Text must be a string"
+    
+    # Clean the text
+    cleaned_text = clean_text_for_tts(text)
+    
+    if not cleaned_text.strip():
+        return None, "Text is empty after cleaning (contains only unsupported characters)"
+    
+    if len(cleaned_text) > max_length:
+        return None, f"Text too long. Maximum {max_length} characters allowed, got {len(cleaned_text)}"
+    
+    return cleaned_text, None
 
 def cleanup_old_files():
     """Clean up audio files older than 1 hour"""
@@ -47,6 +178,40 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "text-to-speech"})
 
+@app.route('/clean-text', methods=['POST'])
+def clean_text_endpoint():
+    """
+    Test endpoint to see how text will be cleaned
+    
+    Expected JSON payload:
+    {
+        "text": "Text to clean 😊🎉 #hashtag @mention"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({"error": "Text is required"}), 400
+        
+        original_text = data['text']
+        cleaned_text, error = validate_and_clean_text(original_text)
+        
+        if error:
+            return jsonify({"error": error}), 400
+        
+        return jsonify({
+            "original_text": original_text,
+            "cleaned_text": cleaned_text,
+            "original_length": len(original_text),
+            "cleaned_length": len(cleaned_text),
+            "characters_removed": len(original_text) - len(cleaned_text)
+        })
+        
+    except Exception as e:
+        print(f"Error in clean_text: {str(e)}")
+        return jsonify({"error": f"Text cleaning failed: {str(e)}"}), 500
+
 @app.route('/synthesize', methods=['POST'])
 def synthesize_speech():
     """
@@ -59,7 +224,8 @@ def synthesize_speech():
         "voice_name": "en-US-Wavenet-D" (optional),
         "speaking_rate": 1.0 (optional, 0.25 to 4.0),
         "pitch": 0.0 (optional, -20.0 to 20.0),
-        "volume_gain_db": 0.0 (optional, -96.0 to 16.0)
+        "volume_gain_db": 0.0 (optional, -96.0 to 16.0),
+        "skip_cleaning": false (optional, set to true to skip text cleaning)
     }
     """
     try:
@@ -68,9 +234,16 @@ def synthesize_speech():
         if not data or 'text' not in data:
             return jsonify({"error": "Text is required"}), 400
         
-        text = data['text']
-        if not text.strip():
-            return jsonify({"error": "Text cannot be empty"}), 400
+        original_text = data['text']
+        skip_cleaning = data.get('skip_cleaning', False)
+        
+        # Clean and validate text unless explicitly skipped
+        if skip_cleaning:
+            text = original_text
+        else:
+            text, error = validate_and_clean_text(original_text)
+            if error:
+                return jsonify({"error": error}), 400
         
         # Configuration parameters with defaults
         language_code = data.get('language_code', 'es-US')
@@ -115,7 +288,8 @@ def synthesize_speech():
         audio_store[file_id] = {
             'path': temp_file.name,
             'created': datetime.now(),
-            'text': text[:100] + '...' if len(text) > 100 else text
+            'text': text[:100] + '...' if len(text) > 100 else text,
+            'original_text': original_text[:100] + '...' if len(original_text) > 100 else original_text
         }
         
         return jsonify({
@@ -123,6 +297,8 @@ def synthesize_speech():
             "file_id": file_id,
             "audio_url": f"/audio/{file_id}",
             "text_preview": text[:100] + '...' if len(text) > 100 else text,
+            "original_text_preview": original_text[:100] + '...' if len(original_text) > 100 else original_text,
+            "text_was_cleaned": not skip_cleaning,
             "voice_config": {
                 "language_code": language_code,
                 "voice_name": voice_name,
@@ -201,9 +377,16 @@ def quick_speech():
         if not data or 'text' not in data:
             return jsonify({"error": "Text is required"}), 400
         
-        text = data['text']
-        if not text.strip():
-            return jsonify({"error": "Text cannot be empty"}), 400
+        original_text = data['text']
+        skip_cleaning = data.get('skip_cleaning', False)
+        
+        # Clean and validate text unless explicitly skipped
+        if skip_cleaning:
+            text = original_text
+        else:
+            text, error = validate_and_clean_text(original_text)
+            if error:
+                return jsonify({"error": error}), 400
         
         # Use default voice settings for quick speech
         synthesis_input = texttospeech.SynthesisInput(text=text)
@@ -244,6 +427,7 @@ if __name__ == '__main__':
     print("  POST /synthesize - Convert text to speech")
     print("  GET  /audio/<id> - Get audio file")
     print("  POST /quick-speech - Quick text-to-speech")
+    print("  POST /clean-text - Test text cleaning")
     print("  GET  /voices - List available voices")
     print("  GET  /health - Health check")
     

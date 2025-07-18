@@ -10,6 +10,14 @@ import threading
 import time
 import re
 import unicodedata
+import base64
+import logging
+import dotenv
+
+dotenv.load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
@@ -178,39 +186,6 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "text-to-speech"})
 
-@app.route('/clean-text', methods=['POST'])
-def clean_text_endpoint():
-    """
-    Test endpoint to see how text will be cleaned
-    
-    Expected JSON payload:
-    {
-        "text": "Text to clean 😊🎉 #hashtag @mention"
-    }
-    """
-    try:
-        data = request.get_json()
-        
-        if not data or 'text' not in data:
-            return jsonify({"error": "Text is required"}), 400
-        
-        original_text = data['text']
-        cleaned_text, error = validate_and_clean_text(original_text)
-        
-        if error:
-            return jsonify({"error": error}), 400
-        
-        return jsonify({
-            "original_text": original_text,
-            "cleaned_text": cleaned_text,
-            "original_length": len(original_text),
-            "cleaned_length": len(cleaned_text),
-            "characters_removed": len(original_text) - len(cleaned_text)
-        })
-        
-    except Exception as e:
-        print(f"Error in clean_text: {str(e)}")
-        return jsonify({"error": f"Text cleaning failed: {str(e)}"}), 500
 
 @app.route('/synthesize', methods=['POST'])
 def synthesize_speech():
@@ -263,7 +238,7 @@ def synthesize_speech():
         
         # Select the type of audio file
         audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
+            audio_encoding=texttospeech.AudioEncoding.OGG_OPUS,
             speaking_rate=speaking_rate,
             pitch=pitch,
             volume_gain_db=volume_gain_db
@@ -312,109 +287,71 @@ def synthesize_speech():
         print(f"Error in synthesize_speech: {str(e)}")
         return jsonify({"error": f"Speech synthesis failed: {str(e)}"}), 500
 
-@app.route('/audio/<file_id>', methods=['GET'])
-def get_audio(file_id):
-    """Serve audio file by ID"""
-    try:
-        if file_id not in audio_store:
-            return jsonify({"error": "Audio file not found"}), 404
-        
-        file_path = audio_store[file_id]['path']
-        
-        if not os.path.exists(file_path):
-            # Clean up dead reference
-            audio_store.pop(file_id, None)
-            return jsonify({"error": "Audio file not found"}), 404
-        
-        return send_file(
-            file_path,
-            mimetype='audio/mpeg',
-            as_attachment=False,
-            download_name=f'speech_{file_id}.mp3'
-        )
-        
-    except Exception as e:
-        print(f"Error serving audio: {str(e)}")
-        return jsonify({"error": "Failed to serve audio file"}), 500
+from elevenlabs import ElevenLabs
 
-@app.route('/voices', methods=['GET'])
-def list_voices():
-    """List available voices for a language"""
-    try:
-        language_code = request.args.get('language_code', 'en-US')
-        
-        # List available voices
-        voices = client.list_voices(language_code=language_code)
-        
-        voice_list = []
-        for voice in voices.voices:
-            voice_list.append({
-                "name": voice.name,
-                "language_codes": list(voice.language_codes),
-                "ssml_gender": voice.ssml_gender.name,
-                "natural_sample_rate_hertz": voice.natural_sample_rate_hertz
-            })
-        
-        return jsonify({
-            "voices": voice_list,
-            "total_count": len(voice_list),
-            "language_code": language_code
-        })
-        
-    except Exception as e:
-        print(f"Error listing voices: {str(e)}")
-        return jsonify({"error": f"Failed to list voices: {str(e)}"}), 500
+client = ElevenLabs(
+    api_key=os.environ.get("ELEVENLABS_API_KEY")
+)
 
 @app.route('/quick-speech', methods=['POST'])
 def quick_speech():
     """
-    Quick text-to-speech that returns audio directly without storing
-    Good for short texts and immediate playback
+    Quick text-to-speech that returns audio directly without storing.
+    Tries ElevenLabs first, falls back to Google TTS if it fails.
     """
     try:
         data = request.get_json()
-        
+
         if not data or 'text' not in data:
             return jsonify({"error": "Text is required"}), 400
-        
+
         original_text = data['text']
         skip_cleaning = data.get('skip_cleaning', False)
-        
-        # Clean and validate text unless explicitly skipped
+
         if skip_cleaning:
             text = original_text
         else:
             text, error = validate_and_clean_text(original_text)
             if error:
                 return jsonify({"error": error}), 400
-        
-        # Use default voice settings for quick speech
+
+        # Try ElevenLabs first
+        try:
+            audio_gen = client.text_to_speech.convert(
+                voice_id='b2htR0pMe28pYwCY9gnP',
+                output_format='opus_48000_128',
+                text=text,
+                model_id='eleven_flash_v2_5'
+            )
+            audio_bytes = b''.join(chunk for chunk in audio_gen)
+            logging.info(f"TTS audio generated by ElevenLabs for text: '{text[:50]}...' ({len(audio_bytes)} bytes)")
+            return jsonify({"audio_base64": base64.b64encode(audio_bytes).decode('utf-8'), "provider": "elevenlabs"})
+        except Exception as eleven_error:
+            logging.warning(f"ElevenLabs failed: {str(eleven_error)}. Falling back to Google TTS.")
+
+        # Fallback to Google TTS
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
             language_code='es-US',
             name='es-US-Chirp-HD-O'
         )
         audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
+            audio_encoding=texttospeech.AudioEncoding.OGG_OPUS,
+            speaking_rate=1.1
         )
-        
-        response = client.synthesize_speech(
+        response = texttospeech.TextToSpeechClient().synthesize_speech(
             input=synthesis_input,
             voice=voice,
             audio_config=audio_config
         )
-        
-        # Return audio directly
-        return send_file(
-            io.BytesIO(response.audio_content),
-            mimetype='audio/mpeg',
-            as_attachment=False,
-            download_name='quick_speech.mp3'
-        )
-        
+        audio_bytes = response.audio_content
+        logging.info(f"TTS audio generated by Google for text: '{text[:50]}...' ({len(audio_bytes)} bytes)")
+        return jsonify({"audio_base64": base64.b64encode(audio_bytes).decode('utf-8'), "provider": "google"})
+
     except Exception as e:
         print(f"Error in quick_speech: {str(e)}")
-        return jsonify({"error": f"Quick speech failed: {str(e)}"}), 500
+        return jsonify({"error": f"Speech synthesis failed: {str(e)}"}), 500
+
 
 if __name__ == '__main__':
     # Check if Google Cloud credentials are set

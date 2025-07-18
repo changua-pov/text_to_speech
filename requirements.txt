@@ -2,3 +2,5 @@ Flask
 flask-cors
 google-cloud-texttospeech
 gunicorn
+elevenlabs==2.7.1
+python-dotenv

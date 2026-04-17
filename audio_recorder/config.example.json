@@ -1,0 +1,34 @@
+{
+  "aws": {
+    "region": "us-east-1",
+    "delivery_mode": "firehose",
+    "firehose": {
+      "stream_name_prefix": "raspi-audio"
+    },
+    "kinesis": {
+      "stream_name": "raspi-audio-stream"
+    },
+    "lambda": {
+      "function_name": "store-audio-recording"
+    }
+  },
+  "devices": [
+    {
+      "name": "mic0",
+      "alsa_device": "hw:0,0",
+      "channels": 2,
+      "sample_rate": 44100,
+      "split_channels": true
+    },
+    {
+      "name": "mic1",
+      "alsa_device": "hw:1,0",
+      "channels": 1,
+      "sample_rate": 48000,
+      "split_channels": false
+    }
+  ],
+  "recording": {
+    "chunk_duration_secs": 5
+  }
+}

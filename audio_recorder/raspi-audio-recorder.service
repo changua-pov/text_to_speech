@@ -1,0 +1,15 @@
+[Unit]
+Description=Raspberry Pi Multi-Microphone Audio Recorder
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/raspi-audio-recorder
+ExecStart=/home/pi/raspi-audio-recorder/raspi-audio-recorder --config /home/pi/raspi-audio-recorder/config.json
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
